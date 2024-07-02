@@ -24,11 +24,3 @@ def get_unique_tickers():
     tickers = tickers_amex + tickers_nasdaq + tickers_nyse
     unique_tickers = list(set(tickers))
     return unique_tickers
-
-
-if __name__ == "__main__":
-    unique_tickers = get_unique_tickers()
-    print("Total unique tickers:", len(unique_tickers))
-    with open('tickers.txt', 'w') as f:
-        for ticker in unique_tickers:
-            f.write(f"{ticker}\n")

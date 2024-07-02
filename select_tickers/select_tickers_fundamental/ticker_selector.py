@@ -64,39 +64,8 @@ def select_tickers(tickers, batch_size=100):
         sleep(1)  # To avoid rate limiting
 
     # Sort by asset growth in ascending order and select the 30 tickers with the lowest growth
-    ticker_growth.sort(key=lambda x: x[1])
+    ticker_growth.sort(key=lambda x: x[1], reverse=True)
     selected_tickers = [ticker for ticker, growth in ticker_growth[:30]]
 
     return selected_tickers
 
-# if __name__ == "__main__":
-#     # Load tickers from file
-#     with open('tickers.txt', 'r') as f:
-#         tickers = [line.strip() for line in f]
-
-#     selected_tickers = select_tickers(tickers)
-#     print("Selected Tickers with the Lowest Asset Growth:", len(selected_tickers))
-#     with open('selected_tickers.txt', 'w') as f:
-#         for ticker in selected_tickers:
-#             f.write(f"{ticker}\n")
-if __name__ == "__main__":
-    # Load tickers from file
-    try:
-        with open('tickers.txt', 'r') as f:
-            tickers = [line.strip() for line in f]
-    except FileNotFoundError:
-        print("Error: tickers.txt not found.")
-        tickers = []
-
-    if tickers:
-        selected_tickers = select_tickers(tickers)
-        print("Selected Tickers with the Lowest Asset Growth:", selected_tickers)
-
-        # Write selected tickers to a file
-        try:
-            with open('selected_tickers.txt', 'w') as f:
-                for ticker in selected_tickers:
-                    f.write(f"{ticker}\n")
-            print("Selected tickers written to selected_tickers.txt")
-        except IOError:
-            print("Error writing to selected_tickers.txt")

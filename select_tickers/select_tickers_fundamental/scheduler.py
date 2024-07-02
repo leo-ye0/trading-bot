@@ -23,7 +23,7 @@ def calculate_next_trading_day(current_date, exchange_code, num_days):
     except Exception as e:
         print(f"Error fetching trading calendar: {e}")
         return None
-def run_periodically(trading_days_interval):
+def run_periodically(trading_days_interval, main_task):
     # Initialize trading calendar (example using NYSE calendar)
     trading_calendar = get_calendar('XNYS')
 
@@ -32,18 +32,10 @@ def run_periodically(trading_days_interval):
         current_date = datetime.now()
         next_run_date = calculate_next_trading_day(current_date, trading_calendar, trading_days_interval)
         
-        # Execute your script here
         print(f"Running script at {datetime.now()}...")
-        tickers = get_unique_tickers()
-        selected_tickers = select_tickers(tickers)
-        print("Selected tickers:", selected_tickers)
+        main_task()
         
         # Sleep until next run
         sleep_duration = (next_run_date - datetime.now()).total_seconds()
         print(f"Next run scheduled at {next_run_date}. Sleeping for {sleep_duration} seconds...")
         time.sleep(sleep_duration)
-
-if __name__ == "__main__":
-    # Set interval in trading days (63 trading days)
-    trading_days_interval = 63
-    run_periodically(trading_days_interval)
