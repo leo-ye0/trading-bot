@@ -37,6 +37,8 @@ from finrl.config import (
     TRADE_END_DATE,
 )
 from alpaca_trade_api.rest import REST, TimeFrame
+from stable_baselines3 import A2C
+from stable_baselines3.common.evaluation import evaluate_policy
 TRAIN_START_DATE = '2020-01-01'
 TRAIN_END_DATE = '2021-01-01'
 TRADE_START_DATE = '2021-01-01'
@@ -180,7 +182,7 @@ def fetch_30(tickers_file, train_start_date, train_end_date, test_start_date, te
 # df_summary = algorithm_build(df)
 # print(df_summary)
 def data_split(df, start_date, end_date):
-    return df[(df['date'] >= start_date) & (df['date'] < end_date)]
+    return df[(df['date'] >= start_date) & (df['date'] < end_date)].reset_index(drop=True)
 
 def design_strategy(tickers_file):
     try:
@@ -192,15 +194,21 @@ def design_strategy(tickers_file):
         if df1 is None:
             print("Error fetching data. Exiting strategy design.")
             return None, None
+        print("Shape of df1:", df1.shape)
         
         # Split data into train and trade periods
         train = data_split(df1, TRAIN_START_DATE, TRAIN_END_DATE)
         trade = data_split(df1, TRADE_START_DATE, TRADE_END_DATE)
+
+        print("Train DataFrame shape:", train.shape)
+        print("Trade DataFrame shape:", trade.shape)
         
         # Calculate state space dynamically based on INDICATORS
         stock_dim = len(train['tic'].unique())
         print(f"Stock Dimension: {stock_dim}")
+        # state_space = 1 + 2 * stock_dim + len(INDICATORS) * stock_dim
         state_space = 1 + 2 * stock_dim + len(INDICATORS) * stock_dim
+        print(f"Calculated state space: {state_space}")     
         
         env_kwargs = {
             "num_stock_shares": [stock_dim],  # List of zeros
@@ -215,21 +223,32 @@ def design_strategy(tickers_file):
             "tech_indicator_list": INDICATORS,
             "print_verbosity": 10
         }
-        
-        # Create environments
+        print("Creating training environment...")
         env_train = StockTradingEnv(train, **env_kwargs)
+        print("Training environment created.")
+        
+        print("Creating trading environment...")
         env_trade = StockTradingEnv(trade, **env_kwargs)
+        print("Trading environment created.")
+        print(f"Observation space shape: {env_train.observation_space.shape}")
         
-        # Train model
+        #Train model
         agent = DRLAgent(env=env_train)
-        model = agent.get_model("a2c")
-        trained_model = agent.train_model(model=model, tb_log_name='A2C')
-        print("Trained model:", trained_model)
-        
-        # Evaluate model
-        df_account_value, df_actions = DRLAgent.DRL_prediction(model=trained_model, environment=env_trade)
-        print("Evaluation results:", df_account_value, df_actions)
-        
+        model = agent.get_model("ddpg")
+        print("Training model...")
+
+        # print(env_train.initial) #=true
+        obs = env_train.reset()
+        print(len(env_train.state))
+        print(len(obs[0]))
+        #print(env_train.df.day)
+
+        trained_model = agent.train_model(model=model, tb_log_name='DDPG', total_timesteps=5000)
+        print("Model training completed.")
+
+        #Evaluate model
+ #       df_account_value, df_actions = DRLAgent.DRL_prediction(model=trained_model, environment=env_trade)
+ #       print("Evaluation results:", df_account_value, df_actions)
         return df_account_value, df_actions
     
     except Exception as e:
