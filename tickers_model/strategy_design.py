@@ -14,6 +14,11 @@ from finrl.config_tickers import DOW_30_TICKER
 from finrl.meta.preprocessor.yahoodownloader import YahooDownloader
 from finrl.meta.preprocessor.preprocessors import FeatureEngineer, data_split
 from finrl.meta.env_stock_trading.env_stocktrading import StockTradingEnv
+from trade_env import StockEnvTrade
+from train_env import StockEnvTrain
+from finrl import config
+from stable_baselines3 import DDPG
+from stable_baselines3.common.noise import OrnsteinUhlenbeckActionNoise
 from finrl.agents.stablebaselines3.models import DRLAgent,DRLEnsembleAgent
 from alpaca.trading.client import TradingClient
 from finrl.plot import backtest_stats, backtest_plot, get_daily_return, get_baseline
@@ -101,161 +106,191 @@ def fetch_30(tickers_file, train_start_date, train_end_date, test_start_date, te
         print(f"Error in fetch_30: {str(e)}")
         return None
 
+def add_technical_indicator(df):
+        """
+        calcualte technical indicators
+        use stockstats package to add technical inidactors
+        :param data: (df) pandas dataframe
+        :return: (df) pandas dataframe
+        """
+        stock = Sdf.retype(df.copy())
+        stock['close'] = stock['adjcp']
+        unique_ticker = stock.tic.unique()
 
-# def algorithm_build(df):
-#     stock_dimension = len(df.tic.unique())
-#     state_space = 1 + 2*stock_dimension + len(INDICATORS)*stock_dimension
-#     print(f"Stock Dimension: {stock_dimension}, State Space: {state_space}")
-#     env_kwargs = {
-#     "hmax": 100, 
-#     "initial_amount": 1000000, 
-#     "buy_cost_pct": 0.001, 
-#     "sell_cost_pct": 0.001, 
-#     "state_space": state_space, 
-#     "stock_dim": stock_dimension, 
-#     "tech_indicator_list": INDICATORS,
-#     "action_space": stock_dimension, 
-#     "reward_scaling": 1e-4,
-#     "print_verbosity":5}
-#     rebalance_window = 63 #63 # rebalance_window is the number of days to retrain the model
-#     validation_window = 63 #63 # validation_window is the number of days to do validation and trading (e.g. if validation_window=63, then both validation and trading period will be 63 days)
+        macd = pd.DataFrame()
+        rsi = pd.DataFrame()
 
-#     ensemble_agent = DRLEnsembleAgent(df=df,
-#                     train_period=(TRAIN_START_DATE,TRAIN_END_DATE),
-#                     val_test_period=(TEST_START_DATE,TEST_END_DATE),
-#                     rebalance_window=rebalance_window, 
-#                     validation_window=validation_window, 
-#                     **env_kwargs)
-#     A2C_model_kwargs = {
-#                     'n_steps': 5,
-#                     'ent_coef': 0.005,
-#                     'learning_rate': 0.0007
-#                     }
+        #temp = stock[stock.tic == unique_ticker[0]]['macd']
+        for i in range(len(unique_ticker)):
+            ## macd
+            temp_macd = stock[stock.tic == unique_ticker[i]]['macd']
+            temp_macd = pd.DataFrame(temp_macd)
+            macd = macd.append(temp_macd, ignore_index=True)
+            ## rsi
+            temp_rsi = stock[stock.tic == unique_ticker[i]]['rsi_30']
+            temp_rsi = pd.DataFrame(temp_rsi)
+            rsi = rsi.append(temp_rsi, ignore_index=True)
 
-#     PPO_model_kwargs = {
-#                         "ent_coef":0.01,
-#                         "n_steps": 2, #2048
-#                         "learning_rate": 0.00025,
-#                         "batch_size": 128
-#                         }
+        df['macd'] = macd
+        df['rsi'] = rsi
+        return df
 
-#     DDPG_model_kwargs = {
-#                         #"action_noise":"ornstein_uhlenbeck",
-#                         "buffer_size": 10000, #10_000
-#                         "learning_rate": 0.0005,
-#                         "batch_size": 64
-#                         }
+def add_turbulence(df):
+    """
+    add turbulence index from a precalcualted dataframe
+    :param data: (df) pandas dataframe
+    :return: (df) pandas dataframe
+    """
+    turbulence_index = calcualte_turbulence(df)
+    df = df.merge(turbulence_index, on='datadate')
+    df = df.sort_values(['datadate','tic']).reset_index(drop=True)
+    return df
 
-#     TD3_model_kwargs = {
-#                         "action_noise":"ornstein_uhlenbeck",
-#                         "buffer_size": 10000, #10_000
-#                         "learning_rate": 0.0005,
-#                         "batch_size": 64
-#                         }
+def calcualte_turbulence(df):
+    """calculate turbulence index based on dow 30"""
+    # can add other market assets
 
-#     SAC_model_kwargs = {
-#                         "buffer_size": 10000, #10_000
-#                         "learning_rate": 0.0005,
-#                         "batch_size": 64
-#                         }
+    df_price_pivot=df.pivot(index='datadate', columns='tic', values='adjcp')
+    unique_date = df.datadate.unique()
+    # start after a year
+    start = 252
+    turbulence_index = [0]*start
+    #turbulence_index = [0]
+    count=0
+    for i in range(start,len(unique_date)):
+        current_price = df_price_pivot[df_price_pivot.index == unique_date[i]]
+        hist_price = df_price_pivot[[n in unique_date[0:i] for n in df_price_pivot.index ]]
+        cov_temp = hist_price.cov()
+        current_temp=(current_price - np.mean(hist_price,axis=0))
+        temp = current_temp.values.dot(np.linalg.inv(cov_temp)).dot(current_temp.values.T)
+        if temp>0:
+            count+=1
+            if count>2:
+                turbulence_temp = temp[0][0]
+            else:
+                #avoid large outlier because of the calculation just begins
+                turbulence_temp=0
+        else:
+            turbulence_temp=0
+        turbulence_index.append(turbulence_temp)
 
-#     timesteps_dict = {'a2c' : 1000, #10_000 each
-#                     'ppo' : 1000, 
-#                     'ddpg' : 1000,
-#                     'td3' : 1000,
-#                     'sac' : 1000}
-#     df_summary = ensemble_agent.run_ensemble_strategy(A2C_model_kwargs=A2C_model_kwargs,
-#                                                  PPO_model_kwargs=PPO_model_kwargs,
-#                                                  DDPG_model_kwargs=DDPG_model_kwargs,
-#                                                  TD3_model_kwargs=TD3_model_kwargs,
-#                                                  SAC_model_kwargs=SAC_model_kwargs,
-#                                                  timesteps_dict=timesteps_dict)
-#     return df_summary
+
+    turbulence_index = pd.DataFrame({'datadate':df_price_pivot.index,
+                                     'turbulence':turbulence_index})
+    return turbulence_index
+
+# def data_split(df, start_date, end_date):
+#     return df[(df['date'] >= start_date) & (df['date'] < end_date)].reset_index(drop=True)
+def data_split(df,start,end):
+    """
+    split the dataset into training or testing using date
+    :param data: (df) pandas dataframe, start, end
+    :return: (df) pandas dataframe
+    """
+    data = df[(df.datadate >= start) & (df.datadate < end)]
+    data=data.sort_values(['datadate','tic'],ignore_index=True)
+    data.index = data.datadate.factorize()[0]
+    return data
+
+def model_train(env_train):
+    df = FeatureEngineer(df.copy(),
+                      use_technical_indicator=True,
+                      tech_indicator_list = config.INDICATORS,
+                      use_turbulence=True,
+                      user_defined_feature = False).preprocess_data()
+    n_actions = env_train.action_space.shape[-1]
+    param_noise = None
+    action_noise = OrnsteinUhlenbeckActionNoise(mean=np.zeros(n_actions), sigma=float(0.5) * np.ones(n_actions))
+
+    # model settings
+    model_ddpg = DDPG('MlpPolicy',
+                    env_train,
+                    batch_size=64,
+                    buffer_size=100000,
+                    param_noise=param_noise,
+                    action_noise=action_noise,
+                    verbose=0,
+                    tensorboard_log="./multiple_stock_tensorboard/")
+
+    ## 250k timesteps: took about 20 mins to finish
+    model_ddpg.learn(total_timesteps=250000, tb_log_name="DDPG_run_1")
+# def design_strategy(tickers_file):
+#     try:
+#         # Fetch data and preprocess
+#         df1 = fetch_30(tickers_file, TRAIN_START_DATE, TRAIN_END_DATE, TRADE_START_DATE, TRADE_END_DATE)
+#         #print(df1)
+        
+        
+#         if df1 is None:
+#             print("Error fetching data. Exiting strategy design.")
+#             return None, None
+#         print("Shape of df1:", df1.shape)
+        
+#         # Split data into train and trade periods
+#         train = data_split(df1, TRAIN_START_DATE, TRAIN_END_DATE)
+#         trade = data_split(df1, TRADE_START_DATE, TRADE_END_DATE)
+
+#         print("Train DataFrame shape:", train.shape)
+#         print("Trade DataFrame shape:", trade.shape)
+        
+#         # Calculate state space dynamically based on INDICATORS
+#         stock_dim = len(train['tic'].unique())
+#         print(f"Stock Dimension: {stock_dim}")
+#         # state_space = 1 + 2 * stock_dim + len(INDICATORS) * stock_dim
+#         state_space = 1 + 2 * stock_dim + len(INDICATORS) * stock_dim
+#         print(f"Calculated state space: {state_space}")     
+        
+#         env_kwargs = {
+#             "num_stock_shares": [stock_dim],  # List of zeros
+#             "stock_dim": stock_dim,
+#             "hmax": 100,
+#             "initial_amount": 1000000,
+#             "buy_cost_pct": [0.001] * stock_dim,
+#             "sell_cost_pct": [0.001] * stock_dim,
+#             "reward_scaling": 1e-4,
+#             "state_space": state_space,
+#             "action_space": stock_dim,
+#             "tech_indicator_list": INDICATORS,
+#             "print_verbosity": 10
+#         }
+#         print("Creating training environment...")
+#         env_train = StockTradingEnv(train, **env_kwargs)
+#         print("Training environment created.")
+        
+#         print("Creating trading environment...")
+#         env_trade = StockTradingEnv(trade, **env_kwargs)
+#         print("Trading environment created.")
+#         print(f"Observation space shape: {env_train.observation_space.shape}")
+        
+#         #Train model
+#         agent = DRLAgent(env=env_train)
+#         model = agent.get_model("ddpg")
+#         print("Training model...")
+
+#         # print(env_train.initial) #=true
+#         obs = env_train.reset()
+#         print(len(env_train.state))
+#         print(len(obs[0]))
+#         #print(env_train.df.day)
+
+#         trained_model = agent.train_model(model=model, tb_log_name='DDPG', total_timesteps=5000)
+#         print("Model training completed.")
+
+#         #Evaluate model
+#  #       df_account_value, df_actions = DRLAgent.DRL_prediction(model=trained_model, environment=env_trade)
+#  #       print("Evaluation results:", df_account_value, df_actions)
+#         return df_account_value, df_actions
     
+#     except Exception as e:
+#         print(f"Error in design_strategy: {str(e)}")
+#         return None, None
 
-
-# df = fetch_30('../select_tickers/select_tickers_fundamental/selected_tickers.txt',
-#          train_start_date='2009-04-01',
-#          train_end_date='2022-01-01',
-#          test_start_date='2022-01-01',
-#          test_end_date='2024-06-01')
-# df_summary = algorithm_build(df)
-# print(df_summary)
-def data_split(df, start_date, end_date):
-    return df[(df['date'] >= start_date) & (df['date'] < end_date)].reset_index(drop=True)
-
-def design_strategy(tickers_file):
-    try:
-        # Fetch data and preprocess
-        df1 = fetch_30(tickers_file, TRAIN_START_DATE, TRAIN_END_DATE, TRADE_START_DATE, TRADE_END_DATE)
-        #print(df1)
-        
-        
-        if df1 is None:
-            print("Error fetching data. Exiting strategy design.")
-            return None, None
-        print("Shape of df1:", df1.shape)
-        
-        # Split data into train and trade periods
-        train = data_split(df1, TRAIN_START_DATE, TRAIN_END_DATE)
-        trade = data_split(df1, TRADE_START_DATE, TRADE_END_DATE)
-
-        print("Train DataFrame shape:", train.shape)
-        print("Trade DataFrame shape:", trade.shape)
-        
-        # Calculate state space dynamically based on INDICATORS
-        stock_dim = len(train['tic'].unique())
-        print(f"Stock Dimension: {stock_dim}")
-        # state_space = 1 + 2 * stock_dim + len(INDICATORS) * stock_dim
-        state_space = 1 + 2 * stock_dim + len(INDICATORS) * stock_dim
-        print(f"Calculated state space: {state_space}")     
-        
-        env_kwargs = {
-            "num_stock_shares": [stock_dim],  # List of zeros
-            "stock_dim": stock_dim,
-            "hmax": 100,
-            "initial_amount": 1000000,
-            "buy_cost_pct": [0.001] * stock_dim,
-            "sell_cost_pct": [0.001] * stock_dim,
-            "reward_scaling": 1e-4,
-            "state_space": state_space,
-            "action_space": stock_dim,
-            "tech_indicator_list": INDICATORS,
-            "print_verbosity": 10
-        }
-        print("Creating training environment...")
-        env_train = StockTradingEnv(train, **env_kwargs)
-        print("Training environment created.")
-        
-        print("Creating trading environment...")
-        env_trade = StockTradingEnv(trade, **env_kwargs)
-        print("Trading environment created.")
-        print(f"Observation space shape: {env_train.observation_space.shape}")
-        
-        #Train model
-        agent = DRLAgent(env=env_train)
-        model = agent.get_model("ddpg")
-        print("Training model...")
-
-        # print(env_train.initial) #=true
-        obs = env_train.reset()
-        print(len(env_train.state))
-        print(len(obs[0]))
-        #print(env_train.df.day)
-
-        trained_model = agent.train_model(model=model, tb_log_name='DDPG', total_timesteps=5000)
-        print("Model training completed.")
-
-        #Evaluate model
- #       df_account_value, df_actions = DRLAgent.DRL_prediction(model=trained_model, environment=env_trade)
- #       print("Evaluation results:", df_account_value, df_actions)
-        return df_account_value, df_actions
-    
-    except Exception as e:
-        print(f"Error in design_strategy: {str(e)}")
-        return None, None
-
-
+def DRL_prediction(model, data, env, obs):
+    print("==============Model Prediction===========")
+    for i in range(len(data.index.unique())):
+        action, _states = model.predict(obs)
+        obs, rewards, dones, info = env.step(action)
+        env.render()
     
 def execute_trades(alpaca_api, df_actions):
     try:
@@ -306,56 +341,3 @@ if __name__ == "__main__":
     else:
         print("Evaluation results:", df_account_value, df_actions)
         print("Error occurred in strategy execution. No actions to execute.")
-
-
-
-# from alpaca_trade_api.rest import REST
-
-# def fetch_selected_tickers(tickers_file):
-#     try:
-#         with open(tickers_file, 'r') as f:
-#             tickers = [line.strip() for line in f.readlines()]
-#         return tickers
-#     except Exception as e:
-#         print(f"Error fetching tickers from file: {str(e)}")
-#         return []
-
-# def execute_trades(alpaca_api, tickers):
-#     try:
-#         # Connect to Alpaca
-#         api = REST(alpaca_api['API_KEY'], alpaca_api['API_SECRET'], base_url=alpaca_api['BASE_URL'])
-        
-#         # Example: Buy 10 shares of each selected ticker
-#         for ticker in tickers:
-#             try:
-#                 api.submit_order(
-#                     symbol=ticker,
-#                     qty=10,
-#                     side='buy',
-#                     type='market',
-#                     time_in_force='gtc'
-#                 )
-#                 print(f"Submitted buy order for {ticker}")
-#             except Exception as e:
-#                 print(f"Error executing trade for {ticker}: {str(e)}")
-#                 continue  # Skip to the next ticker if there's an error
-    
-#     except Exception as e:
-#         print(f"Error executing trades: {str(e)}")
-
-# if __name__ == "__main__":
-#     # Alpaca API credentials
-#     alpaca_api = {
-#         'API_KEY': 'PKNC2Y52PK84SV0AJ5G0',
-#         'API_SECRET': 'VsL2M0iivKdfEEbM6QvdCQsuqnpvaz9s91utOvhI',
-#         'BASE_URL': 'https://paper-api.alpaca.markets'  # or 'https://api.alpaca.markets' for live trading
-#     }
-    
-#     tickers_file = '../select_tickers/select_tickers_fundamental/selected_tickers.txt'  # Replace with your selected tickers file
-#     selected_tickers = fetch_selected_tickers(tickers_file)
-    
-#     if selected_tickers:
-#         print(f"Executing trades for {len(selected_tickers)} tickers.")
-#         execute_trades(alpaca_api, selected_tickers)
-#     else:
-#         print("No tickers found to execute trades.")
